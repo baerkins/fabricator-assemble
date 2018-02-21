@@ -1,7 +1,7 @@
 {
-  "name": "fabricator-assemble",
+  "name": "refabricator-assemble",
   "version": "1.2.0",
-  "description": "The assembly engine behind Fabricator",
+  "description": "A fork of the assembly engine behind Fabricator. Works with refabricator - https://github.com/baerkins/fabricator",
   "main": "index.js",
   "engines": {
     "node": ">=0.10.0",
@@ -13,7 +13,7 @@
   "keywords": [
     "fabricator"
   ],
-  "author": "Luke Askew",
+  "author": "Shaun M. Baer / Luke Askew",
   "license": "MIT",
   "repository": "fbrctr/fabricator-assemble",
   "dependencies": {

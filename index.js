@@ -26,6 +26,12 @@ var defaults = {
 	layout: 'default',
 
 	/**
+	 * ID (filename) of default layout
+	 * @type {String}
+	 */
+	blocksLayout: 'blocks',
+
+	/**
 	 * Layout templates
 	 * @type {(String|Array)}
 	 */
@@ -50,16 +56,22 @@ var defaults = {
 	materials: ['src/materials/**/*'],
 
 	/**
+	 * Materials - snippets turned into partials
+	 * @type {(String|Array)}
+	 */
+	materialBlocks: ['src/material-blocks/**/*'],
+
+	/**
+	 * Materials - snippets turned into partials
+	 * @type {(String|Array)}
+	 */
+	materialPartials: ['src/materials/**/*', 'src/material-blocks/**/*'],
+
+	/**
 	 * JSON or YAML data models that are piped into views
 	 * @type {(String|Array)}
 	 */
 	data: ['src/data/**/*.{json,yml}'],
-
-	/**
-	 * Data to be merged into context
-	 * @type {(Object)}
-	 */
-	buildData: {},
 
 	/**
 	 * Markdown files containing toolkit-wide documentation
@@ -72,7 +84,9 @@ var defaults = {
 	 * @type {Object}
 	 */
 	keys: {
+		materialPartials: 'materialpartials',
 		materials: 'materials',
+		materialBlocks: 'materialblocks',
 		views: 'views',
 		docs: 'docs'
 	},
@@ -82,18 +96,6 @@ var defaults = {
 	 * @type {String}
 	 */
 	dest: 'dist',
-
-	/**
-	 * Extension to output files as
-	 * @type {String}
-	 */
-  extension: '.html',
-
-	/**
-	 * Custom dest map
-	 * @type {Object}
-	 */
-  destMap: {},
 
 	/**
 	 * beautifier options
@@ -150,10 +152,28 @@ var assembly = {
 	materials: {},
 
 	/**
+	 * Meta data for materials, grouped by "collection" (sub-directory); contains name and sub-items
+	 * @type {Object}
+	 */
+	materialBlocks: {},
+
+	/**
+	 * Meta data for materials, grouped by "collection" (sub-directory); contains name and sub-items
+	 * @type {Object}
+	 */
+	materialPartials: {},
+
+	/**
 	 * Each material's front-matter data
 	 * @type {Object}
 	 */
 	materialData: {},
+
+	/**
+	 * Each material's front-matter data
+	 * @type {Object}
+	 */
+	materialBlocksData: {},
 
 	/**
 	 * Meta data for user-created views (views in views/{subdir})
@@ -245,13 +265,19 @@ var buildContext = function (data, hash) {
 	var materials = {};
 	materials[options.keys.materials] = assembly.materials;
 
+	var materialBlocks = {};
+	materialBlocks[options.keys.materialBlocks] = assembly.materialBlocks;
+
+	var materialPartials = {};
+	materialPartials[options.keys.materialPartials] = assembly.materialPartials;
+
 	var views = {};
 	views[options.keys.views] = assembly.views;
 
 	var docs = {};
 	docs[options.keys.docs] = assembly.docs;
 
-	return _.assign({}, data, assembly.data, assembly.materialData, options.buildData, materials, views, docs, hash);
+	return _.assign({}, data, assembly.data, assembly.materialData, materials, materialBlocks, assembly.materialBlocksData, materialPartials, views, docs, hash);
 
 };
 
@@ -261,8 +287,8 @@ var buildContext = function (data, hash) {
  * @param  {String} str
  * @return {String}
  */
-var toTitleCase = function(str) {
-	return str.replace(/(\-|_)/g, ' ').replace(/\w\S*/g, function(word) {
+var toTitleCase = function (str) {
+	return str.replace(/(\-|_)/g, ' ').replace(/\w\S*/g, function (word) {
 		return word.charAt(0).toUpperCase() + word.substr(1).toLowerCase();
 	});
 };
@@ -275,8 +301,143 @@ var toTitleCase = function(str) {
  * @return {String}
  */
 var wrapPage = function (page, layout) {
-	return layout.replace(/\{\%\s?body\s?\%\}/, page);
+	// var regex = /\{\%\s?body\s?\%\}/;
+	hasBody = layout.substring(0).search(/\{\%\s?body\s?\%\}/);
+	if (hasBody < 0) {
+		return layout;
+	} else {
+		return layout.replace(/\{\%\s?body\s?\%\}/, page);
+	}
 };
+
+var replaceHtmlSpecialChars = function (str) {
+	return String(str).
+		replace(/&/g, '&amp;').
+		replace(/</g, '&lt;').
+		replace(/>/g, '&gt;').
+		replace(/"/g, '&quot;').
+		replace(/'/g, '&#039;');
+}
+
+
+/**
+ * Parse each material - collect data, create partial
+ */
+var parseMaterialPartials = function () {
+
+	// reset object
+	assembly.materialPartials = {};
+
+	// get files and dirs
+	var files = globby.sync(options.materialPartials, { nodir: true, nosort: true });
+
+	// build a glob for identifying directories
+	options.materialPartials = (typeof options.materialPartials === 'string') ? [options.materialPartials] : options.materialPartials;
+	var dirsGlob = options.materialPartials.map(function (pattern) {
+		return path.dirname(pattern) + '/*/';
+	});
+
+	// get all directories
+	// do a new glob; trailing slash matches only dirs
+	var dirs = globby.sync(dirsGlob).map(function (dir) {
+		return path.normalize(dir).split(path.sep).slice(-2, -1)[0];
+	});
+
+
+	// stub out an object for each collection and subCollection
+	files.forEach(function (file) {
+
+		var parent = getName(path.normalize(path.dirname(file)).split(path.sep).slice(-2, -1)[0], true);
+		var collection = getName(path.normalize(path.dirname(file)).split(path.sep).pop(), true);
+		var isSubCollection = (dirs.indexOf(parent) > -1);
+
+		// get the material base dir for stubbing out the base object for each category (e.g. component, structure)
+		var materialBase = (isSubCollection) ? parent : collection;
+
+		// stub the base object
+		assembly.materialPartials[materialBase] = assembly.materialPartials[materialBase] || {
+			name: toTitleCase(getName(materialBase)),
+			items: {}
+		};
+
+		if (isSubCollection) {
+			assembly.materialPartials[parent].items[collection] = assembly.materialPartials[parent].items[collection] || {
+				name: toTitleCase(getName(collection)),
+				items: {}
+			};
+		}
+
+	});
+
+
+	// iterate over each file (material)
+	files.forEach(function (file) {
+
+		// get info
+		var fileMatter = getMatter(file);
+		var collection = getName(path.normalize(path.dirname(file)).split(path.sep).pop(), true);
+		var parent = path.normalize(path.dirname(file)).split(path.sep).slice(-2, -1)[0];
+		var isSubCollection = (dirs.indexOf(parent) > -1);
+		var id = (isSubCollection) ? getName(collection) + '.' + getName(file) : getName(file);
+		var key = (isSubCollection) ? collection + '.' + getName(file, true) : getName(file, true);
+
+		// get material front-matter, omit `notes`
+		var localData = _.omit(fileMatter.data, 'notes');
+
+		// trim whitespace from material content
+		var content = fileMatter.content.replace(/^(\s*(\r?\n|\r))+|(\s*(\r?\n|\r))+$/g, '');
+
+
+		// capture meta data for the material
+		if (!isSubCollection) {
+			assembly.materialPartials[collection].items[key] = {
+				name: toTitleCase(id),
+				notes: (fileMatter.data.notes) ? md.render(fileMatter.data.notes) : '',
+				data: localData
+			};
+		} else {
+			assembly.materialPartials[parent].items[collection].items[key] = {
+				name: toTitleCase(id.split('.')[1]),
+				notes: (fileMatter.data.notes) ? md.render(fileMatter.data.notes) : '',
+				data: localData
+			};
+		}
+
+
+		// store material-name-spaced local data in template context
+		assembly.materialData[id.replace(/\./g, '-')] = localData;
+
+
+		// replace local fields on the fly with name-spaced keys
+		// this allows partials to use local front-matter data
+		// only affects the compilation environment
+		if (!_.isEmpty(localData)) {
+			_.forEach(localData, function (val, key) {
+				// {{field}} => {{material-name.field}}
+				var regex = new RegExp('(\\{\\{[#\/]?)(\\s?' + key + '+?\\s?)(\\}\\})', 'g');
+				content = content.replace(regex, function (match, p1, p2, p3) {
+					return p1 + id.replace(/\./g, '-') + '.' + p2.replace(/\s/g, '') + p3;
+				});
+			});
+		}
+
+		// register the partial
+		Handlebars.registerPartial(id, content);
+
+	});
+
+
+	// sort materials object alphabetically
+	assembly.materialPartials = sortObj(assembly.materialPartials, 'order');
+
+	for (var collection in assembly.materialPartials) {
+		assembly.materialPartials[collection].items = sortObj(assembly.materialPartials[collection].items, 'order');
+	}
+
+};
+
+
+
 
 
 /**
@@ -366,34 +527,19 @@ var parseMaterials = function () {
 		// store material-name-spaced local data in template context
 		assembly.materialData[id.replace(/\./g, '-')] = localData;
 
-
-		// replace local fields on the fly with name-spaced keys
-		// this allows partials to use local front-matter data
-		// only affects the compilation environment
-		if (!_.isEmpty(localData)) {
-			_.forEach(localData, function (val, key) {
-				// {{field}} => {{material-name.field}}
-				var regex = new RegExp('(\\{\\{[#\/]?)(\\s?' + key + '+?\\s?)(\\}\\})', 'g');
-				content = content.replace(regex, function (match, p1, p2, p3) {
-					return p1 + id.replace(/\./g, '-') + '.' + p2.replace(/\s/g, '') + p3;
-				});
-			});
-		}
-
-		// register the partial
-		Handlebars.registerPartial(id, content);
-
 	});
 
 
 	// sort materials object alphabetically
-	assembly.materials = sortObj(assembly.materials, 'order');
+	assembly.materialPartials = sortObj(assembly.materialPartials, 'order');
 
-	for (var collection in assembly.materials) {
-		assembly.materials[collection].items = sortObj(assembly.materials[collection].items, 'order');
+	for (var collection in assembly.materialPartials) {
+		assembly.materialPartials[collection].items = sortObj(assembly.materialPartials[collection].items, 'order');
 	}
 
 };
+
+
 
 
 /**
@@ -527,6 +673,55 @@ var parseViews = function () {
 };
 
 
+
+
+/**
+ * Get meta data for views
+ */
+var parseMaterialBlocks = function () {
+
+	// reset
+	assembly.materialBlocks = {};
+
+	// get files
+	var files = globby.sync(options.materialBlocks, { nodir: true });
+
+	files.forEach(function (file) {
+
+		var id = getName(file, true);
+
+		// determine if view is part of a collection (subdir)
+		var dirname = path.normalize(path.dirname(file)).split(path.sep).pop(),
+			collection = (dirname !== options.keys.materialBlocks) ? dirname : '';
+
+		var fileMatter = getMatter(file),
+			fileData = _.omit(fileMatter.data, 'notes');
+		fileData.fabricator = true;
+
+		// if this file is part of a collection
+		if (collection) {
+
+			// create collection if it doesn't exist
+			assembly.materialBlocks[collection] = assembly.materialBlocks[collection] || {
+				name: toTitleCase(collection),
+				items: {}
+			};
+
+			// store view data
+			assembly.materialBlocks[collection].items[id] = {
+				name: toTitleCase(id),
+				data: fileData
+			};
+
+		}
+
+	});
+
+
+};
+
+
+
 /**
  * Register new Handlebars helpers
  */
@@ -536,6 +731,8 @@ var registerHelpers = function () {
 	var resolveHelper = path.join.bind(null, __dirname, 'helpers');
 	var localHelpers = fs.readdirSync(resolveHelper());
 	var userHelpers = options.helpers;
+
+
 
 	// register local helpers
 	localHelpers.map(function (helper) {
@@ -551,6 +748,27 @@ var registerHelpers = function () {
 			Handlebars.registerHelper(helper, userHelpers[helper]);
 		}
 	}
+
+
+	Handlebars.registerHelper('toJSON', function (object) {
+		return new Handlebars.SafeString(JSON.stringify(object));
+	});
+
+	/**
+	 * `material`
+	 * @description Like a normal partial include (`{{> partialName }}`),
+	 * but with some additional templating logic to help with nested block iterations.
+	 * The name of the helper is the singular form of whatever is defined as the `options.keys.materials`
+	 * @example
+	 * {{material name context}}
+	 */
+	Handlebars.registerHelper('prettyHTML', function (content) {
+
+		return beautifyHtml(content, options.beautifier);
+
+	});
+
+
 
 
 	/**
@@ -605,7 +823,9 @@ var setup = function (userOptions) {
 	parseLayouts();
 	parseLayoutIncludes();
 	parseData();
+	parseMaterialPartials();
 	parseMaterials();
+	parseMaterialBlocks();
 	parseViews();
 	parseDocs();
 
@@ -618,7 +838,11 @@ var setup = function (userOptions) {
 var assemble = function () {
 
 	// get files
-	var files = globby.sync(options.views, { nodir: true });
+	// var filePile = _.merge(options.views, options.materialBlocks);
+	// console.log(filePile);
+	var views = globby.sync(options.views, { nodir: true });
+	var blocks = globby.sync(options.materialBlocks, { nodir: true });
+	var files = views.concat(blocks);
 
 	// create output directory if it doesn't already exist
 	mkdirp.sync(options.dest);
@@ -630,8 +854,10 @@ var assemble = function () {
 
 		// build filePath
 		var dirname = path.normalize(path.dirname(file)).split(path.sep).pop(),
-			collection = (dirname !== options.keys.views) ? dirname : '',
-			filePath = path.normalize(path.join(options.dest, collection, path.basename(file)));
+			type = path.normalize(path.dirname(file)).split(path.sep)[1],
+			name = collection = (dirname !== options.keys.views) ? dirname : '',
+			filePath = path.normalize(path.join(options.dest, collection, path.basename(file))),
+			basename = path.basename(file, '.html');
 
 		// get page gray matter and content
 		var pageMatter = getMatter(file),
@@ -642,32 +868,37 @@ var assemble = function () {
 		}
 
 		// template using Handlebars
-		var source = wrapPage(pageContent, assembly.layouts[pageMatter.data.layout || options.layout]),
-			context = buildContext(pageMatter.data),
-			template = Handlebars.compile(source);
+		if (type === 'material-blocks') {
+
+			var htmlContent = Handlebars.compile(pageContent);
+
+			pageMatter.data['name'] = pageMatter.data['name'] ? pageMatter.data['name'] : toTitleCase(basename);
+			pageMatter.data['block-markup'] = htmlContent();
+
+			var source = wrapPage(pageContent, assembly.layouts['blocks']),
+				context = buildContext(pageMatter.data),
+				template = Handlebars.compile(source);
+
+
+
+		} else {
+			var source = wrapPage(pageContent, assembly.layouts[pageMatter.data.layout || options.layout]),
+				context = buildContext(pageMatter.data),
+				template = Handlebars.compile(source);
+		}
+
 
 		// redefine file path if dest front-matter variable is defined
 		if (pageMatter.data.dest) {
 			filePath = path.normalize(pageMatter.data.dest);
 		}
 
-    if (options.destMap[collection]) {
-			filePath = path.normalize(path.join(options.destMap[collection], path.basename(file)));
-    }
-
 		// change extension to .html
-		filePath = filePath.replace(/\.[0-9a-z]+$/, options.extension);
+		filePath = filePath.replace(/\.[0-9a-z]+$/, '.html');
 
 		// write file
 		mkdirp.sync(path.dirname(filePath));
-		try {
-			fs.writeFileSync(filePath, template(context));
-		} catch(e) {
-			const originFilePath = path.dirname(file) + '/' + path.basename(file);
-
-			console.error('\x1b[31m \x1b[1mBold', 'Error while comiling template', originFilePath, '\x1b[0m \n')
-			throw e;
-		}
+		fs.writeFileSync(filePath, template(context));
 
 		// write a copy file if custom dest-copy front-matter variable is defined
 		if (pageMatter.data['dest-copy']) {
@@ -694,7 +925,7 @@ module.exports = function (options) {
 		// assemble
 		assemble();
 
-	} catch(e) {
+	} catch (e) {
 		handleError(e);
 	}
 
